@@ -329,12 +329,16 @@ header{flex:0 0 auto;border-bottom:1px solid #bbb;padding-bottom:.5vmin}
 h1{font-size:clamp(12px,1.7vmin,18px);margin:0;font-weight:600}
 h1 span{font-weight:400;color:#555}
 .sha{margin:.2em 0 0;font-size:clamp(9px,1.1vmin,12px);color:#777;word-break:break-all}
-#stage{flex:1 1 auto;display:flex;align-items:center;justify-content:center;min-height:0;padding:1vmin 0}
-#stage svg{width:100%;height:100%;min-height:0;display:block}
+#stage{flex:1 1 auto;display:grid;gap:1vmin;min-height:0;padding:1vmin 0;
+  grid-template-columns:repeat(var(--gc),1fr);grid-template-rows:repeat(var(--gr),1fr)}
+#stage div{display:flex;align-items:center;justify-content:center;min-height:0;min-width:0;overflow:hidden}
+#stage svg{flex:1 1 0;width:100%;height:100%;min-height:0;display:block}
 nav{flex:0 0 auto;display:flex;gap:1em;align-items:center;flex-wrap:wrap;
   border-top:1px solid #bbb;padding-top:.5vmin;font-size:clamp(11px,1.4vmin,15px)}
 button{font:inherit;border:1px solid #bbb;background:#fff;padding:.25em .8em;cursor:pointer;color:#111}
 button:hover{border-color:#111}
+button[aria-pressed=true]{background:#111;color:#fff;border-color:#111}
+.grid{display:flex;gap:.3em;align-items:center}
 input[type=range]{width:9em;vertical-align:middle}
 .count{font-variant-numeric:tabular-nums;color:#333}
 .hint{color:#777;margin-left:auto}
@@ -343,31 +347,74 @@ body.bare{padding:.4vmin}
 """
 
 STREAM_JS = """
+// 파운틴 패킷은 순서도 출처도 안 따집니다. 그래서 화면을 쪼개 여러 장을 동시에
+// 띄우면 카메라가 한 프레임에서 그만큼 한꺼번에 주워 갑니다 — 칸 수만큼 빨라집니다.
+// (읽는 쪽은 원래 한 프레임에서 QR 을 여러 개 찾도록 돼 있어 고칠 게 없습니다.)
+
 var stage=document.getElementById('stage'), count=document.getElementById('count'),
     play=document.getElementById('play'), fps=document.getElementById('fps'),
-    fpsv=document.getElementById('fpsv'), i=0, loops=0, timer=null;
+    fpsv=document.getElementById('fpsv'),
+    i=0, shown=0, timer=null, cells=[], grid=INIT_GRID, side=0;
 
-function draw(){
-  stage.innerHTML=FRAMES[i];
-  count.textContent=(i+1)+' / '+FRAMES.length+'  ·  '+loops+'바퀴';
+// QR 이 제일 커지는 배치를 화면 비율에서 직접 찾습니다. 16:9 에서 4칸을 2×2로
+// 놓으면 양옆이 남는데, 같은 크기로 3×2에 여섯 장이 들어갑니다.
+function bestLayout(n, w, h){
+  var best=[1, n, 0];
+  for(var c=1;c<=n;c++){
+    var r=Math.ceil(n/c), s=Math.min(w/c, h/r);
+    if(s>best[2]) best=[c, r, s];
+  }
+  return best;
 }
-function step(){ i=(i+1)%FRAMES.length; if(i===0) loops++; draw(); }
+
+function layout(){
+  var d=bestLayout(grid, stage.clientWidth||1920, stage.clientHeight||1080);
+  side=Math.round(d[2]);
+  stage.style.setProperty('--gc', d[0]);
+  stage.style.setProperty('--gr', d[1]);
+  stage.innerHTML='';
+  cells=[];
+  for(var k=0;k<grid;k++){
+    var c=document.createElement('div');
+    stage.appendChild(c); cells.push(c);
+  }
+  var bs=document.querySelectorAll('.grid button');
+  for(var n=0;n<bs.length;n++) bs[n].setAttribute('aria-pressed', +bs[n].dataset.g===grid);
+  draw();
+}
+function draw(){
+  for(var k=0;k<grid;k++) cells[k].innerHTML=FRAMES[(i+k)%FRAMES.length];
+  var loops=Math.floor(shown/FRAMES.length);
+  // 1080p 화면을 1080p 로 찍었을 때 470px 짜리는 읽혔고 330px 짜리는 못 읽었습니다.
+  count.textContent=(i+1)+' / '+FRAMES.length+'  ·  '+loops+'바퀴  ·  초당 '
+                    +(grid*(+fps.value))+'장  ·  한 칸 '+side+'px'
+                    +(side<400?'  ⚠ 작습니다 — 카메라가 못 읽을 수 있어요':'');
+}
+function step(){ i=(i+grid)%FRAMES.length; shown+=grid; draw(); }
+function back(){ i=(i-grid+FRAMES.length*2)%FRAMES.length; draw(); }
 function start(){ if(timer) return; timer=setInterval(step, 1000/(+fps.value)); play.textContent='멈춤'; }
 function stop(){ clearInterval(timer); timer=null; play.textContent='재생'; }
+function setGrid(g){ if(!(g>=1&&g<=64)) return; grid=g; layout(); }
+
 play.onclick=function(){ timer?stop():start(); };
-fps.oninput=function(){ fpsv.textContent=fps.value+' fps'; if(timer){ stop(); start(); } };
+fps.oninput=function(){ fpsv.textContent=fps.value+' fps'; draw(); if(timer){ stop(); start(); } };
 document.getElementById('bare').onclick=function(){ document.body.classList.toggle('bare'); };
+var gb=document.querySelectorAll('.grid button');
+for(var n=0;n<gb.length;n++) gb[n].onclick=function(){ setGrid(+this.dataset.g); };
 document.addEventListener('keydown',function(e){
   if(e.key===' '){ e.preventDefault(); timer?stop():start(); }
   else if(e.key==='ArrowRight'){ e.preventDefault(); stop(); step(); }
-  else if(e.key==='ArrowLeft'){ e.preventDefault(); stop(); i=(i-1+FRAMES.length)%FRAMES.length; draw(); }
+  else if(e.key==='ArrowLeft'){ e.preventDefault(); stop(); back(); }
   else if(e.key==='f'||e.key==='F'){ document.body.classList.toggle('bare'); }
+  else if(e.key>='1'&&e.key<='9'){ setGrid(+e.key); }
 });
-draw(); start();
+addEventListener('resize', layout);
+layout(); start();
 """
 
 
-def write_stream_player(frames, out: Path, title, sha, fps, K):
+def write_stream_player(frames, out: Path, title, sha, fps, K, grid=1):
+    buttons = "".join(f'<button data-g="{g}">{g}</button>' for g in (1, 2, 4, 6, 9, 12))
     html = f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -383,11 +430,12 @@ def write_stream_player(frames, out: Path, title, sha, fps, K):
   <button id="play">재생</button>
   <label>속도 <input type="range" id="fps" min="2" max="20" step="1" value="{fps}">
     <span id="fpsv">{fps} fps</span></label>
+  <span class="grid">칸 {buttons}</span>
   <button id="bare">촬영 모드 (F)</button>
   <span class="count" id="count"></span>
-  <span class="hint">스페이스로 멈추고, ← → 로 한 칸씩</span>
+  <span class="hint">칸을 늘리면 그만큼 빨라집니다 — 카메라에 또렷하게 잡히는 선까지</span>
 </nav>
-<script>var FRAMES={json.dumps(frames)};{STREAM_JS}</script>
+<script>var FRAMES={json.dumps(frames)},INIT_GRID={grid};{STREAM_JS}</script>
 </body></html>
 """
     p = out / "stream.html"
@@ -414,6 +462,8 @@ def main():
     ap.add_argument("--overhead", type=float, default=2.2,
                     help="stream: 블록 수 대비 패킷 배수 (기본 2.2)")
     ap.add_argument("--fps", type=int, default=10, help="stream: 재생기 기본 속도")
+    ap.add_argument("--grid", type=int, default=1, choices=[1, 2, 4, 6, 9, 12],
+                    help="stream: 한 화면에 동시에 띄울 QR 개수 (재생기에서도 바꿀 수 있습니다)")
     ap.add_argument("--seed", type=int, default=None, help="stream: 재현용 난수 시드")
     ap.add_argument("--border", type=int, default=4, help="QR 둘레 여백 모듈 수")
     ap.add_argument("--png", action="store_true", help="HTML 과 함께 PNG 도 저장")
@@ -453,13 +503,15 @@ def main():
             svg, v = qr_svg(pkt, args.border)
             frames.append(svg)
             ver = max(ver, v)
-        player = write_stream_player(frames, args.out, title, sha, args.fps, K)
+        player = write_stream_player(frames, args.out, title, sha, args.fps, K, args.grid)
         if args.png:
             for i, pkt in enumerate(packets):
                 qr_png(pkt, args.out / f"frame_{i:05d}.png", args.scale, args.border)
         size_mb = player.stat().st_size / 1e6
         print(f"블록 {K}개 · 패킷 {len(packets)}개 · QR 버전 {ver}")
         print(f"→ {player} 를 브라우저로 열고 재생하면서 찍으세요 ({size_mb:.1f}MB)")
+        secs = len(packets) / max(1, args.fps)
+        print(f"   한 바퀴 {secs:.0f}초 (1칸) · {secs / 6:.0f}초 (6칸) · {secs / 12:.0f}초 (12칸)")
         if args.png:
             print(f"ffmpeg -start_number 0 -framerate {args.fps} "
                   f"-i {args.out}/frame_%05d.png -pix_fmt yuv420p {args.out}/stream.mp4")

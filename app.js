@@ -265,6 +265,10 @@ function seekAndPresent(v, t) {
 // 놓치지 않습니다 — 재생만으로 모자랐을 때만 돕니다.
 const MIN_STEP = 1 / 60;    // 60fps 보다 촘촘히 찍을 일은 없습니다
 const MAX_PROBE = 0.1;      // 프레임 경계를 더듬을 때의 최대 보폭
+// 프레임 간격을 아무리 크게 봐도 이 이상으로는 보폭을 늘리지 않습니다.
+// 버퍼링 중에 seek 이 멀리 튀면 간격을 크게 잘못 재는데, 그대로 두면 영상을
+// 성큼성큼 건너뛰며 대부분을 놓칩니다. 10fps 보다 느린 촬영본은 없다고 봅니다.
+const MAX_PERIOD = 0.1;
 
 async function seekPass(v, w, h, counter) {
   const dur = v.duration;
@@ -286,7 +290,7 @@ async function seekPass(v, w, h, counter) {
         probe = Math.min(probe * 1.6, MAX_PROBE);
         continue;
       }
-      if (last >= 0 && mt > last) period = Math.min(period ?? Infinity, mt - last);
+      if (last >= 0 && mt > last) period = Math.min(period ?? Infinity, mt - last, MAX_PERIOD);
       last = mt;
       probe = MIN_STEP;
     }
@@ -296,7 +300,11 @@ async function seekPass(v, w, h, counter) {
     if (stopped()) break;
 
     // 관측한 간격만큼만 전진합니다. 아직 모르면 최소 보폭으로 더듬습니다.
-    t = (mt !== null ? mt : t) + (period !== null ? period * 1.05 : MIN_STEP);
+    // 다만 mediaTime 을 그대로 믿지는 않습니다 — 색인(cues)이 없는 파일에서는
+    // seek 이 엉뚱한 곳에 내려앉기도 하는데, 그게 영상 끝이면 나머지를 통째로
+    // 건너뛰게 됩니다. 그래서 한 걸음은 반드시 MIN_STEP 이상 MAX_PROBE 이하로.
+    const want = (mt !== null ? mt : t) + (period !== null ? period * 1.05 : MIN_STEP);
+    t = Math.min(Math.max(want, t + MIN_STEP), t + MAX_PROBE);
 
     const pct = Math.min(99, Math.round((t / dur) * 100));
     if (pct !== shown) { shown = pct; setStatus(`영상을 한 프레임씩 다시 훑는 중… ${pct}%`); }

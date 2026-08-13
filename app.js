@@ -164,10 +164,11 @@ function grab(source, w, h) {
   return ctx.getImageData(0, 0, w, h);
 }
 
-function send(img, frameIndex) {
+// deep = 사진. 워커가 타일·이진화를 바꿔가며 더 오래 들여다봅니다.
+function send(img, frameIndex, deep = false) {
   busy = true;
   worker.postMessage(
-    { type: "frame", image: { data: img.data, width: img.width, height: img.height }, frameIndex },
+    { type: "frame", image: { data: img.data, width: img.width, height: img.height }, frameIndex, deep },
     [img.data.buffer]
   );
 }
@@ -182,7 +183,7 @@ function waitIdle() {
 async function runImages(files, offset = 0) {
   for (let i = 0; i < files.length; i++) {
     if (stopped()) break;
-    setStatus(`사진 ${i + 1}/${files.length} 읽는 중…`);
+    setStatus(`사진 ${i + 1}/${files.length} 정밀 스캔 중…`);
     let bmp;
     try {
       bmp = await createImageBitmap(files[i]);
@@ -190,7 +191,7 @@ async function runImages(files, offset = 0) {
       setStatus(`${files[i].name} 을(를) 이미지로 열 수 없습니다 — 건너뜁니다.`, "bad");
       continue;
     }
-    send(grab(bmp, bmp.width, bmp.height), offset + i);
+    send(grab(bmp, bmp.width, bmp.height), offset + i, true);
     bmp.close();
     await waitIdle();
   }

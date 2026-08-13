@@ -1,0 +1,15 @@
+{
+  "name": "Kinescope — QR 복원기",
+  "short_name": "Kinescope",
+  "description": "화면을 찍은 영상이나 사진에서 원본 파일을 되살립니다. 전부 브라우저 안에서, 인터넷 없이.",
+  "lang": "ko",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "background_color": "#e6e7e1",
+  "theme_color": "#2f5d50",
+  "icons": [
+    { "src": "./icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./icon.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

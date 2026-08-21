@@ -21,12 +21,15 @@ except Exception:
 SKIP_NAMES = {"__pycache__", "_qr", "desktop.ini", "Thumbs.db", ".DS_Store"}
 SKIP_SUFFIX = {".pyc", ".pyo"}
 
-def collect(folder: Path, script: Path):
+def collect(folder: Path, script: Path, out: Path = None):
+    out = out.resolve() if out is not None else None
     files = []
     for p in sorted(folder.rglob("*")):
         if not p.is_file():
             continue
         if p.resolve() == script.resolve():
+            continue
+        if out is not None and out in p.resolve().parents:
             continue
         if any(part in SKIP_NAMES or part.startswith(".") for part in p.relative_to(folder).parts):
             continue
@@ -34,6 +37,15 @@ def collect(folder: Path, script: Path):
             continue
         files.append(p)
     return files
+
+def split_files(files, root: Path, parts):
+    sizes = sorted(((p.stat().st_size, p) for p in files), reverse=True)
+    bins = [[0, []] for _ in range(parts)]
+    for sz, p in sizes:
+        b = min(bins, key=lambda x: x[0])
+        b[0] += sz
+        b[1].append(p)
+    return [sorted(b[1]) for b in bins if b[1]]
 
 def zip_files(files, root: Path):
     buf = io.BytesIO()
@@ -49,6 +61,7 @@ def as_zip(path: Path):
         return zip_files(collect(path, Path(__file__)), path)
     return zip_files([path], path.parent)
 
+INLINE_LIMIT = 400
 MAGIC = 0x5153
 HEADER = struct.Struct(">HHHIII")
 MASK32 = 0xFFFFFFFF
@@ -545,7 +558,8 @@ h1 span{font-weight:400;color:#555}
 #stage{flex:1 1 auto;display:grid;gap:1vmin;min-height:0;padding:1vmin 0;
   grid-template-columns:repeat(var(--gc),1fr);grid-template-rows:repeat(var(--gr),1fr)}
 #stage div{display:flex;align-items:center;justify-content:center;min-height:0;min-width:0;overflow:hidden}
-#stage svg{flex:1 1 0;width:100%;height:100%;min-height:0;display:block}
+#stage svg,#stage img{flex:1 1 0;width:100%;height:100%;min-height:0;display:block;
+  object-fit:contain;image-rendering:pixelated}
 nav{flex:0 0 auto;display:flex;gap:1em;align-items:center;flex-wrap:wrap;
   border-top:1px solid #bbb;padding-top:.5vmin;font-size:clamp(11px,1.4vmin,15px)}
 button{font:inherit;border:1px solid #bbb;background:#fff;padding:.25em .8em;cursor:pointer;color:#111}
@@ -562,7 +576,7 @@ STREAM_JS = """
 var stage=document.getElementById('stage'), count=document.getElementById('count'),
     play=document.getElementById('play'), fps=document.getElementById('fps'),
     fpsv=document.getElementById('fpsv'),
-    i=0, shown=0, timer=null, cells=[], grid=INIT_GRID, side=0;
+    i=0, shown=0, timer=null, cells=[], grid=INIT_GRID, side=0, cache=new Map();
 
 function bestLayout(n, w, h){
   var best=[1, n, 0];
@@ -582,21 +596,41 @@ function layout(){
   cells=[];
   for(var k=0;k<grid;k++){
     var c=document.createElement('div');
+    if(FILES){ var im=document.createElement('img'); c.appendChild(im); }
     stage.appendChild(c); cells.push(c);
   }
   var bs=document.querySelectorAll('.grid button');
   for(var n=0;n<bs.length;n++) bs[n].setAttribute('aria-pressed', +bs[n].dataset.g===grid);
   draw();
 }
+function url(n){ return 'f/'+('00000'+n).slice(-5)+'.png'; }
+function preload(n){
+  for(var k=0;k<grid*8;k++){
+    var x=(n+k)%COUNT;
+    if(!cache.has(x)){ var im=new Image(); im.src=url(x); cache.set(x,im); }
+  }
+  if(cache.size>grid*40){
+    var keep=new Map();
+    for(var k=-grid;k<grid*8;k++){
+      var x=((n+k)%COUNT+COUNT)%COUNT;
+      if(cache.has(x)) keep.set(x,cache.get(x));
+    }
+    cache=keep;
+  }
+}
 function draw(){
-  for(var k=0;k<grid;k++) cells[k].innerHTML=FRAMES[(i+k)%FRAMES.length];
-  var loops=Math.floor(shown/FRAMES.length);
-  count.textContent=(i+1)+' / '+FRAMES.length+'  ·  '+loops+'바퀴  ·  초당 '
+  for(var k=0;k<grid;k++){
+    var x=(i+k)%COUNT;
+    if(FILES) cells[k].firstChild.src=url(x); else cells[k].innerHTML=FRAMES[x];
+  }
+  if(FILES) preload(i+grid);
+  var loops=Math.floor(shown/COUNT);
+  count.textContent=(i+1)+' / '+COUNT+'  ·  '+loops+'바퀴  ·  초당 '
                     +(grid*(+fps.value))+'장  ·  한 칸 '+side+'px'
                     +(side<400?' (작음)':'');
 }
-function step(){ i=(i+grid)%FRAMES.length; shown+=grid; draw(); }
-function back(){ i=(i-grid+FRAMES.length*2)%FRAMES.length; draw(); }
+function step(){ i=(i+grid)%COUNT; shown+=grid; draw(); }
+function back(){ i=(i-grid+COUNT*2)%COUNT; draw(); }
 function start(){ if(timer) return; timer=setInterval(step, 1000/(+fps.value)); play.textContent='멈춤'; }
 function stop(){ clearInterval(timer); timer=null; play.textContent='재생'; }
 function setGrid(g){ if(!(g>=1&&g<=64)) return; grid=g; layout(); }
@@ -698,7 +732,7 @@ ul{line-height:1.9;font-size:clamp(12px,1.7vmin,16px)}
     (out / "index.html").write_text(index, encoding="utf-8")
     return n_sheets, max_version
 
-def write_stream(frames, out: Path, title, sha, fps, K, grid):
+def write_stream(frames, count, out: Path, title, sha, fps, K, grid):
     buttons = "".join('<button data-g="%d">%d</button>' % (g, g) for g in (1, 2, 4, 6, 9, 12))
     html = """<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8">
@@ -719,10 +753,11 @@ def write_stream(frames, out: Path, title, sha, fps, K, grid):
   <button id="bare">F</button>
   <span class="count" id="count"></span>
 </nav>
-<script>var FRAMES=%s,INIT_GRID=%d;%s</script>
+<script>var FRAMES=%s,FILES=%s,COUNT=%d,INIT_GRID=%d;%s</script>
 </body></html>
-""" % (esc(title), STREAM_CSS, esc(title), K, len(frames), sha, fps, fps,
-       buttons, json.dumps(frames), grid, STREAM_JS)
+""" % (esc(title), STREAM_CSS, esc(title), K, count, sha, fps, fps, buttons,
+       json.dumps(frames) if frames else "null", "false" if frames else "true",
+       count, grid, STREAM_JS)
     p = out / "stream.html"
     p.write_text(html, encoding="utf-8")
     return p
@@ -738,18 +773,32 @@ def build_sheets(data, args, out, title, sha):
 def build_stream(data, args, out, title, sha):
     K = max(1, math.ceil(len(data) / args.block))
     count = max(K + 4, math.ceil(K * args.overhead))
+    files = args.frames if args.frames is not None else count > INLINE_LIMIT
     rng = random.Random(args.seed) if args.seed is not None else random.Random()
-    frames, ver = [], 0
+    fdir = out / "f"
+    if files:
+        fdir.mkdir(parents=True, exist_ok=True)
+        for old in fdir.glob("*.png"):
+            old.unlink()
+    frames, ver, n, total = [], 0, 0, 0
     for pkt in lt_packets(data, args.block, count, rng):
-        svg, v = qr_svg(pkt, args.border)
-        frames.append(svg)
-        ver = max(ver, v)
-        if args.png:
-            (out / ("frame_%05d.png" % (len(frames) - 1))).write_bytes(
-                qr_png(pkt, args.scale, args.border))
-    p = write_stream(frames, out, title, sha, args.fps, K, args.grid)
-    secs = len(frames) / max(1, args.fps)
-    print("  stream 블록 %d · 패킷 %d · v%d  ->  %s" % (K, len(frames), ver, p))
+        if files:
+            png = qr_png(pkt, args.scale, args.border)
+            (fdir / ("%05d.png" % n)).write_bytes(png)
+            total += len(png)
+            ver = max(ver, qr_pick_version(len(pkt)))
+        else:
+            svg, v = qr_svg(pkt, args.border)
+            frames.append(svg)
+            ver = max(ver, v)
+        if args.png and not files:
+            (out / ("frame_%05d.png" % n)).write_bytes(qr_png(pkt, args.scale, args.border))
+        n += 1
+    p = write_stream(None if files else frames, n, out, title, sha, args.fps, K, args.grid)
+    secs = n / max(1, args.fps)
+    print("  stream 블록 %d · 패킷 %d · v%d  ->  %s" % (K, n, ver, p))
+    if files:
+        print("  프레임 %d개 · %.0f MB  ->  %s" % (n, total / 1e6, fdir))
     print("  한 바퀴 %.0fs(1칸) %.0fs(6칸) %.0fs(12칸)" % (secs, secs / 6, secs / 12))
     return p
 
@@ -769,6 +818,9 @@ def main():
     ap.add_argument("--png", action="store_true")
     ap.add_argument("--scale", type=int, default=6)
     ap.add_argument("--no-open", action="store_true")
+    ap.add_argument("--frames", dest="frames", action="store_true", default=None)
+    ap.add_argument("--inline", dest="frames", action="store_false")
+    ap.add_argument("--split", type=int, default=1)
     args = ap.parse_args()
 
     here = Path(__file__).resolve().parent
@@ -776,29 +828,51 @@ def main():
     if not src.exists():
         sys.exit("없는 경로: %s" % src)
 
+    out = args.out if args.out is not None else (src if src.is_dir() else src.parent) / "_qr"
+    title = src.name or "kinescope"
+
     if src.is_dir():
-        files = collect(src, Path(__file__))
+        files = collect(src, Path(__file__), out)
         if not files:
             sys.exit("옮길 파일이 없습니다: %s" % src)
-        data = zip_files(files, src)
         print("%s · 파일 %d개" % (src, len(files)))
+        groups = split_files(files, src, args.split) if args.split > 1 else [files]
+        chunks = [zip_files(g, src) for g in groups]
     else:
-        data = as_zip(src)
+        if args.split > 1:
+            sys.exit("--split 은 폴더에만 씁니다.")
+        chunks = [as_zip(src)]
         print("%s" % src)
 
-    sha = hashlib.sha256(data).hexdigest()
-    title = src.name or "kinescope"
-    out = args.out if args.out is not None else (src if src.is_dir() else src.parent) / "_qr"
     out.mkdir(parents=True, exist_ok=True)
-
-    print("zip %s B · %s" % (format(len(data), ","), sha))
-
-    first = None
-    if args.mode in ("stream", "both"):
-        first = build_stream(data, args, out, title, sha) or first
-    if args.mode in ("sheet", "both"):
-        p = build_sheets(data, args, out, title, sha)
+    first, links = None, []
+    for n, data in enumerate(chunks, 1):
+        sha = hashlib.sha256(data).hexdigest()
+        sub = out if len(chunks) == 1 else out / ("part%02d" % n)
+        sub.mkdir(parents=True, exist_ok=True)
+        name = title if len(chunks) == 1 else "%s (%d/%d)" % (title, n, len(chunks))
+        print("[%d/%d] zip %s B · %s" % (n, len(chunks), format(len(data), ","), sha))
+        p = None
+        if args.mode in ("stream", "both"):
+            p = build_stream(data, args, sub, name, sha)
+        if args.mode in ("sheet", "both"):
+            q = build_sheets(data, args, sub, name, sha)
+            p = p or q
         first = first or p
+        if p:
+            links.append((p.relative_to(out).as_posix(), name, len(data)))
+
+    if len(chunks) > 1:
+        items = "\n".join('<li><a href="%s">%s</a> — %s B</li>' % (u, esc(t), format(z, ","))
+                           for u, t, z in links)
+        (out / "index.html").write_text(
+            '<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">'
+            '<title>%s</title><style>%s main{display:block}</style></head><body>'
+            '<header><h1>%s <span>(%d조각)</span></h1></header>'
+            '<main><ul>%s</ul></main></body></html>'
+            % (esc(title), CSS, esc(title), len(chunks), items), encoding="utf-8")
+        first = out / "index.html"
+        print("목록  ->  %s" % first)
 
     if first and not args.no_open:
         try:

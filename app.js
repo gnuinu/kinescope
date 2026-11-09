@@ -7,7 +7,7 @@ const ui = {
   drop: $("#drop"), pick: $("#pick"), file: $("#file"), cam: $("#cam"),
   grid: $("#grid"), stage: $("#stage"), status: $("#status"),
   scope: $("#scope"), preview: $("#preview"),
-  controls: $("#controls"), stop: $("#stop"),
+  controls: $("#controls"), stop: $("#stop"), flip: $("#flip"),
   bar: $("#bar"), pct: $("#pct"),
   mFrames: $("#m-frames"), mPackets: $("#m-packets"),
   mBlocks: $("#m-blocks"), mDupes: $("#m-dupes"),
@@ -344,27 +344,73 @@ async function runVideo(file) {
 
 // 화면을 직접 비추는 모드. 파운틴 스트림이라 "충분해질 때까지 계속 보기"가
 // 그대로 맞아떨어집니다 — 다 모이는 순간 알아서 멈춥니다.
-async function runCamera() {
-  if (!navigator.mediaDevices?.getUserMedia) {
-    throw new Error("이 브라우저에서는 카메라를 열 수 없습니다 (HTTPS 또는 localhost 필요)");
+//
+// 후면·전면(셀카) 둘 다 씁니다. 노트북 웹캠처럼 전면만 있는 기기도 있고,
+// 폰을 세워 둔 채 셀카로 모니터를 비추는 편이 편한 자리도 있습니다.
+
+const FACE_KEY = "kinescope.facing";
+let facing = "environment";
+try {
+  const saved = localStorage.getItem(FACE_KEY);
+  if (saved === "user" || saved === "environment") facing = saved;
+} catch { /* 사생활 보호 모드에서는 저장을 포기합니다 */ }
+
+const faceName = (f) => (f === "user" ? "전면(셀카)" : "후면");
+const other = (f) => (f === "user" ? "environment" : "user");
+
+let flipReq = false;   // 전환 버튼 — 모은 조각은 버리지 않고 카메라만 갈아탑니다
+
+// exact 로 먼저 요청합니다. ideal 만 쓰면 폰에서도 브라우저가 "비슷하면 됐다"며
+// 같은 카메라를 되돌려 주어 전환이 먹지 않습니다. 카메라가 하나뿐인 기기에서는
+// exact 가 OverconstrainedError 로 떨어지므로 그때만 ideal 로 물러섭니다.
+async function openCamera(face) {
+  const size = { width: { ideal: 1920 }, height: { ideal: 1080 } };
+  try {
+    return await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { exact: face }, ...size }, audio: false,
+    });
+  } catch (e) {
+    if (e?.name === "NotAllowedError" || e?.name === "SecurityError") throw e;
+    return await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: face }, ...size }, audio: false,
+    });
   }
-  setStatus("카메라를 여는 중…");
+}
+
+// 카메라가 둘 이상일 때만 전환 버튼을 보여줍니다. 라벨은 권한을 받은 뒤에야
+// 채워지므로 스트림을 연 다음에 셉니다.
+async function updateFlipButton(face) {
+  let many = true;
+  try {
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    many = devs.filter((d) => d.kind === "videoinput").length > 1;
+  } catch { /* 셀 수 없으면 일단 보여줍니다 */ }
+  ui.flip.hidden = !many;
+  ui.flip.disabled = false;
+  ui.flip.textContent = `${faceName(other(face))} 카메라로 전환`;
+}
+
+// 카메라 하나를 열어 다 모일 때까지(또는 중지·전환까지) 프레임을 보냅니다.
+async function capturePass(face, counter) {
+  setStatus(`${faceName(face)} 카메라를 여는 중…`);
   let stream;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-      audio: false,
-    });
+    stream = await openCamera(face);
   } catch (e) {
     throw new Error(e?.name === "NotAllowedError"
       ? "카메라 사용이 거부됐습니다. 주소창의 권한 설정을 확인해 주세요."
-      : "카메라를 열지 못했습니다: " + (e?.message || e));
+      : `${faceName(face)} 카메라를 열지 못했습니다: ` + (e?.message || e));
   }
 
   const v = ui.preview;
   v.srcObject = stream;
   v.muted = true; v.playsInline = true;
+
+  // 실제로 열린 쪽을 적습니다 — 부탁한 쪽과 다를 수 있습니다.
+  const got = stream.getVideoTracks()[0]?.getSettings?.().facingMode || face;
+  v.classList.toggle("mirror", got === "user");
   ui.scope.hidden = false;
+  await updateFlipButton(got);
 
   try {
     await new Promise((res, rej) => {
@@ -373,22 +419,22 @@ async function runCamera() {
     });
     await v.play();
     const w = v.videoWidth, h = v.videoHeight;
-    setStatus(`카메라 ${w}×${h} — QR 화면을 채워서 비춰 주세요. 다 모이면 자동으로 멈춥니다.`);
+    setStatus(`${faceName(got)} 카메라 ${w}×${h} — QR 화면을 채워서 비춰 주세요. ` +
+              "다 모이면 자동으로 멈춥니다.");
 
     const useRVFC = "requestVideoFrameCallback" in v;
-    let n = 0;
     await new Promise((res) => {
       let done = false;
       const stop = () => { if (!done) { done = true; clearInterval(watch); res(); } };
       const step = () => {
         if (done) return;
-        if (stopped()) { stop(); return; }
-        if (!busy && v.videoWidth) send(grab(v, v.videoWidth, v.videoHeight), n++);
+        if (stopped() || flipReq) { stop(); return; }
+        if (!busy && v.videoWidth) send(grab(v, v.videoWidth, v.videoHeight), counter.n++);
         if (useRVFC) v.requestVideoFrameCallback(step);
         else requestAnimationFrame(step);
       };
       // 카메라가 프레임을 끊어도 카메라만은 반드시 꺼지도록.
-      const watch = setInterval(() => { if (stopped()) stop(); }, 100);
+      const watch = setInterval(() => { if (stopped() || flipReq) stop(); }, 100);
       if (useRVFC) v.requestVideoFrameCallback(step); else requestAnimationFrame(step);
     });
     await waitIdle();
@@ -397,6 +443,30 @@ async function runCamera() {
     v.pause();
     v.srcObject = null;
     ui.scope.hidden = true;
+  }
+  return got;
+}
+
+async function runCamera() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error("이 브라우저에서는 카메라를 열 수 없습니다 (HTTPS 또는 localhost 필요)");
+  }
+  const counter = { n: 0 };
+  try {
+    // 전환은 조립을 처음부터 다시 하지 않습니다 — 워커에 reset 을 보내지 않고
+    // 카메라만 바꿔 같은 자리에서 이어 모읍니다.
+    while (!stopped()) {
+      flipReq = false;
+      const got = await capturePass(facing, counter);
+      if (!flipReq) break;
+      facing = other(got);
+      try { localStorage.setItem(FACE_KEY, facing); } catch { /* 저장 못 해도 진행 */ }
+      setStatus(`${faceName(facing)} 카메라로 바꾸는 중… 모은 조각은 그대로 둡니다.`);
+    }
+  } finally {
+    flipReq = false;
+    ui.flip.hidden = true;
+    ui.flip.disabled = false;
   }
 }
 
@@ -415,6 +485,7 @@ function beginRun() {
   ui.mFrames.textContent = "0"; ui.mPackets.textContent = "0";
   ui.mBlocks.textContent = "—"; ui.mDupes.textContent = "0";
   ui.controls.hidden = false;
+  ui.flip.hidden = true;   // 카메라 모드에서만 켜집니다
   ui.pick.disabled = ui.cam.disabled = true;
   worker.postMessage({ type: "reset" });
 }
@@ -464,6 +535,11 @@ ui.stop.onclick = () => {
   if (!running || stopped()) return;
   cancelled = true;
   setStatus("중지했습니다 — 지금까지 모은 조각으로 조립해 봅니다…");
+};
+ui.flip.onclick = () => {
+  if (!running || stopped() || flipReq) return;
+  flipReq = true;
+  ui.flip.disabled = true;   // 새 카메라가 열리면 다시 켜집니다
 };
 ui.rate.oninput = () => { ui.rateV.textContent = ui.rate.value + "×"; };
 ui.rateV.textContent = ui.rate.value + "×";

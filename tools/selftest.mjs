@@ -7,8 +7,12 @@
 // 넘긴 파일을 그대로 파일 입력에 물리고, 복원된 zip 의 SHA-256 이 기대값과
 // 같은지 확인합니다. 콘솔 에러·404 도 함께 잡습니다.
 
-import { chromium } from "playwright";
+import { createRequire } from "node:module";
 import path from "node:path";
+
+// 전역(-g)으로 깔린 playwright 도 찾도록 합니다. 못 찾으면 PLAYWRIGHT_PATH 로
+// 직접 가리킬 수 있습니다 — 예: PLAYWRIGHT_PATH=/opt/node-tools/node_modules/playwright
+const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT_PATH || "playwright");
 
 const [base, expected, ...files] = process.argv.slice(2);
 if (!base || !expected || !files.length) {

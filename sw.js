@@ -3,7 +3,7 @@
 // 파일을 고쳤다면 VERSION 을 올리세요. 올리지 않아도 아래의 갱신 규칙(캐시로
 // 먼저 응답하고 뒤에서 새 파일을 받아두기) 덕분에 다음번 방문 때 새것으로
 // 바뀌지만, VERSION 을 올리면 그 자리에서 통째로 갈립니다.
-const VERSION = "kinescope-v1";
+const VERSION = "kinescope-v2";
 
 const ASSETS = [
   "./",
